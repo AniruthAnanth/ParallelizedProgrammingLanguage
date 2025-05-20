@@ -17,6 +17,10 @@ pub enum Token {
     KeywordJz,
     KeywordJnz,
     Eof,
+    LBrace,    // '{'
+    RBrace,    // '}'
+    Comma,     // ','
+    KeywordFn, // 'fn'
 }
 
 pub struct Scanner<'a> {
@@ -61,27 +65,6 @@ impl<'a> Scanner<'a> {
         self.input[self.pos..].chars().next()
     }
 
-    fn identifier_or_keyword(&mut self) -> Token {
-        let mut ident = String::new();
-        while let Some(c) = self.current {
-            if c.is_alphanumeric() || c == '_' {
-                ident.push(c);
-                self.bump();
-            } else {
-                break;
-            }
-        }
-        match ident.as_str() {
-            "spawn" => Token::KeywordSpawn,
-            "sync" => Token::KeywordSync,
-            "barrier" => Token::KeywordBarrier,
-            "jump" => Token::KeywordJump,
-            "jz" => Token::KeywordJz,
-            "jnz" => Token::KeywordJnz,
-            _ => Token::Identifier(ident),
-        }
-    }
-
     fn number(&mut self) -> Token {
         let mut num_str = String::new();
         // Integer part
@@ -106,7 +89,7 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
-        
+
         let value = num_str.parse::<f64>().unwrap();
         Token::Number(value)
     }
@@ -114,8 +97,6 @@ impl<'a> Scanner<'a> {
     pub fn next_token(&mut self) -> Token {
         self.skip_whitespace_and_comments();
         match self.current {
-            Some(c) if c.is_ascii_alphabetic() || c == '_' => self.identifier_or_keyword(),
-            Some(c) if c.is_ascii_digit() => self.number(),
             Some('+') => {
                 self.bump();
                 Token::Plus
@@ -148,10 +129,46 @@ impl<'a> Scanner<'a> {
                 self.bump();
                 Token::RParen
             }
+            Some('{') => {
+                self.bump();
+                Token::LBrace
+            }
+            Some('}') => {
+                self.bump();
+                Token::RBrace
+            }
+            Some(',') => {
+                self.bump();
+                Token::Comma
+            }
+            Some(c) if c.is_ascii_digit() => self.number(),
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => self.identifier_or_keyword(),
             None => Token::Eof,
             Some(c) => {
                 panic!("Unexpected character: {}", c);
             }
+        }
+    }
+
+    fn identifier_or_keyword(&mut self) -> Token {
+        let mut ident = String::new();
+        while let Some(c) = self.current {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                ident.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        match ident.as_str() {
+            "spawn" => Token::KeywordSpawn,
+            "sync" => Token::KeywordSync,
+            "barrier" => Token::KeywordBarrier,
+            "jump" => Token::KeywordJump,
+            "jz" => Token::KeywordJz,
+            "jnz" => Token::KeywordJnz,
+            "fn" => Token::KeywordFn,
+            _ => Token::Identifier(ident),
         }
     }
 
@@ -187,19 +204,21 @@ mod tests {
 
     #[test]
     fn test_keywords() {
-        let mut s = Scanner::new("spawn sync barrier jump jz jnz");
+        let mut s = Scanner::new("spawn sync barrier jump jz jnz fn");
         assert_eq!(s.next_token(), Token::KeywordSpawn);
         assert_eq!(s.next_token(), Token::KeywordSync);
         assert_eq!(s.next_token(), Token::KeywordBarrier);
         assert_eq!(s.next_token(), Token::KeywordJump);
         assert_eq!(s.next_token(), Token::KeywordJz);
         assert_eq!(s.next_token(), Token::KeywordJnz);
+        assert_eq!(s.next_token(), Token::KeywordFn);
         assert_eq!(s.next_token(), Token::Eof);
     }
 
     #[test]
     fn test_operators_and_delimiters() {
-        let mut s = Scanner::new("+-*/=;()");
+        let mut s = Scanner::new("+-*/=;(){},");
+
         assert_eq!(s.next_token(), Token::Plus);
         assert_eq!(s.next_token(), Token::Minus);
         assert_eq!(s.next_token(), Token::Star);
@@ -208,6 +227,9 @@ mod tests {
         assert_eq!(s.next_token(), Token::Semicolon);
         assert_eq!(s.next_token(), Token::LParen);
         assert_eq!(s.next_token(), Token::RParen);
+        assert_eq!(s.next_token(), Token::LBrace);
+        assert_eq!(s.next_token(), Token::RBrace);
+        assert_eq!(s.next_token(), Token::Comma);
         assert_eq!(s.next_token(), Token::Eof);
     }
 

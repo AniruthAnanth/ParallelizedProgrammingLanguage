@@ -11,6 +11,15 @@ pub enum Expr {
         op: Token,
         rhs: Box<Expr>,
     },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
+    Function {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Expr>,
+    },
 }
 
 use crate::scanner::{Scanner, Token};
@@ -35,6 +44,72 @@ impl<'a> PrattParser<'a> {
         self.current = self.scanner.next_token();
     }
 
+    pub fn parse_function(&mut self) -> Expr {
+        // Expect 'fn'
+        self.advance();
+        let name = if let Token::Identifier(name) = &self.current {
+            name.clone()
+        } else {
+            panic!("Expected function name after 'fn'");
+        };
+        self.advance();
+        // Parse parameters
+        if self.current != Token::LParen {
+            panic!("Expected '(' after function name");
+        }
+        self.advance();
+        let mut params = Vec::new();
+        while let Token::Identifier(param) = &self.current {
+            params.push(param.clone());
+            self.advance();
+            if self.current == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if self.current != Token::RParen {
+            panic!("Expected ')' after parameters");
+        }
+        self.advance();
+        // Parse body
+        if self.current != Token::LBrace {
+            panic!("Expected '{{' to start function body");
+        }
+        self.advance();
+        let mut body = Vec::new();
+        while self.current != Token::RBrace && self.current != Token::Eof {
+            body.push(self.expr(0));
+            if self.current == Token::Semicolon {
+                self.advance();
+            }
+        }
+        if self.current != Token::RBrace {
+            panic!("Expected '}}' to end function body");
+        }
+        self.advance();
+        Expr::Function { name, params, body }
+    }
+
+    pub fn parse_call(&mut self, name: String) -> Expr {
+        // Already saw identifier and '('
+        self.advance();
+        let mut args = Vec::new();
+        while self.current != Token::RParen && self.current != Token::Eof {
+            args.push(self.expr(0));
+            if self.current == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if self.current != Token::RParen {
+            panic!("Expected ')' after arguments");
+        }
+        self.advance();
+        Expr::Call { name, args }
+    }
+
     fn nud(&mut self) -> Expr {
         match &self.current {
             Token::Number(n) => {
@@ -45,7 +120,11 @@ impl<'a> PrattParser<'a> {
             Token::Identifier(name) => {
                 let name = name.clone();
                 self.advance();
-                Expr::Ident(name)
+                if self.current == Token::LParen {
+                    self.parse_call(name)
+                } else {
+                    Expr::Ident(name)
+                }
             }
             Token::Minus => {
                 self.advance();
@@ -67,6 +146,7 @@ impl<'a> PrattParser<'a> {
                 self.advance();
                 expr
             }
+            Token::KeywordFn => self.parse_function(),
             _ => panic!("Unexpected token in nud: {:?}", self.current),
         }
     }

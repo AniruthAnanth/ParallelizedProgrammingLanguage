@@ -1,8 +1,8 @@
 //! Parallelized Programming Language library
 
+pub mod compiler;
 pub mod parser;
 pub mod scanner;
-pub mod compiler;
 pub mod vm;
 
 /// Parse a source string into an AST expression
@@ -11,9 +11,9 @@ pub fn parse_expr(source: &str) -> parser::Expr {
     parser.expr(0)
 }
 
+pub use compiler::{BytecodeCompiler, Compiler};
 pub use parser::PrattParser;
 pub use scanner::Scanner;
-pub use compiler::{Compiler, BytecodeCompiler};
 pub use vm::VM;
 
 #[cfg(test)]
@@ -100,5 +100,35 @@ mod tests {
         assert_eq!(tokens.last(), Some(&Token::Eof));
         assert!(tokens.contains(&Token::LParen));
         assert!(tokens.contains(&Token::KeywordJz));
+    }
+
+    #[test]
+    fn integration_native_print() {
+        let expr = parse_expr("print(123)");
+        let bytecode = BytecodeCompiler::compile(&expr);
+        let _ = VM::run(bytecode); // Should print 123
+    }
+
+    #[test]
+    fn integration_user_function() {
+        use super::vm::Bytecode;
+        use super::VM;
+        let bytecode = vec![
+            Bytecode::LoadConst(10.0), // argument
+            Bytecode::StoreVar(0),     // store as local var 0
+            Bytecode::Call("add1".to_string(), 1),
+            Bytecode::Halt,
+            // Function 'add1' starts here (address 4):
+            Bytecode::LoadVar(0),
+            Bytecode::LoadConst(1.0),
+            Bytecode::Add,
+            Bytecode::Return,
+        ];
+        let mut vm = VM::new(bytecode);
+        // Register the function at the correct address
+        vm.user_functions.insert("add1".to_string(), 4);
+        vm.execute();
+        // The result should be left on the stack after return
+        assert_eq!(vm.stack.pop(), Some(11.0));
     }
 }

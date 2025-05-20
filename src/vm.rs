@@ -1,11 +1,12 @@
 use crate::parser;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 // Define bytecode instruction set for VM
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)] // Allow dead code for unused variants
 pub enum Bytecode {
     // Unary operations
@@ -36,12 +37,17 @@ pub enum Bytecode {
     Pop, // Pop value from stack
     Dup, // Duplicate top of stack
 
+    // Function calls
+    Call(String, usize), // Call function by name with N arguments
+    Return,              // Return from function
+
     // Halt
     Halt, // Stop execution
 }
 
+pub type NativeFn = dyn Fn(&[f64]) -> f64 + 'static;
+
 // Define a struct for the VM
-#[derive(Debug)]
 pub struct VM {
     pub stack: Vec<f64>, // Stack for the VM (changed to f64 for signed integers)
     pub memory: HashMap<usize, f64>, // Memory for the VM (changed to f64 for signed integers)
@@ -49,11 +55,27 @@ pub struct VM {
     pub bytecode: Vec<Bytecode>, // Bytecode instructions
     pub threads: Vec<thread::JoinHandle<()>>, // Threads for parallel execution
     pub receivers: Vec<Receiver<f64>>, // Receivers for thread results (changed to f64 for signed integers)
+    pub user_functions: HashMap<String, usize>, // name -> bytecode address
+    // NOTE: Do NOT derive Debug for VM, because native_functions cannot be Debug
+    pub native_functions:
+        std::collections::HashMap<String, std::rc::Rc<dyn Fn(&[f64]) -> f64 + 'static>>, // name -> native fn
 }
 
 impl VM {
     // Create a new VM instance
     pub fn new(bytecode: Vec<Bytecode>) -> Self {
+        let mut native_functions: HashMap<String, Rc<NativeFn>> = HashMap::new();
+        // Example stdlib: print
+        native_functions.insert(
+            "print".to_string(),
+            Rc::new(|args: &[f64]| {
+                for arg in args {
+                    print!("{} ", arg);
+                }
+                println!("");
+                0.0
+            }),
+        );
         VM {
             stack: Vec::new(),
             memory: HashMap::new(),
@@ -61,6 +83,8 @@ impl VM {
             bytecode,
             threads: Vec::new(),
             receivers: Vec::new(),
+            user_functions: HashMap::new(),
+            native_functions,
         }
     }
 
@@ -83,7 +107,7 @@ impl VM {
         }
 
         while self.pc < self.bytecode.len() {
-            match self.bytecode[self.pc] {
+            match &self.bytecode[self.pc] {
                 Bytecode::Neg => stackop!(self, {
                     if let Some(val) = self.stack.pop() {
                         self.stack.push(-val); // Updated to use f64 directly
@@ -96,23 +120,97 @@ impl VM {
                 Bytecode::Mul => binop!(self, *),
                 Bytecode::Div => binop!(self, /),
                 Bytecode::LoadConst(value) => stackop!(self, {
-                    self.stack.push(value as f64); // Cast to f64
+                    self.stack.push(*value);
                 }),
                 Bytecode::LoadVar(index) => stackop!(self, {
-                    if let Some(&value) = self.memory.get(&index) {
-                        self.stack.push(value);
+                    if let Some(value) = self.memory.get(&index) {
+                        self.stack.push(*value);
                     } else {
                         panic!("Variable not found in memory");
                     }
                 }),
                 Bytecode::StoreVar(index) => stackop!(self, {
                     if let Some(value) = self.stack.pop() {
-                        self.memory.insert(index, value);
+                        self.memory.insert(*index, value);
                     } else {
                         panic!("Stack is empty");
                     }
                 }),
-                Bytecode::Spawn => {
+                Bytecode::Jump(target) => {
+                    self.pc = *target;
+                }
+                Bytecode::JumpIfZero(target) => {
+                    if let Some(&top) = self.stack.last() {
+                        if top == 0.0 {
+                            self.pc = *target;
+                        } else {
+                            self.pc += 1;
+                        }
+                    } else {
+                        panic!("Stack is empty");
+                    }
+                }
+                Bytecode::JumpIfNotZero(target) => {
+                    if let Some(&top) = self.stack.last() {
+                        if top != 0.0 {
+                            self.pc = *target;
+                        } else {
+                            self.pc += 1;
+                        }
+                    } else {
+                        panic!("Stack is empty");
+                    }
+                }
+                Bytecode::Pop => stackop!(self, {
+                    self.stack.pop();
+                }),
+                Bytecode::Dup => stackop!(self, {
+                    if let Some(&top) = self.stack.last() {
+                        self.stack.push(top);
+                    } else {
+                        panic!("Stack is empty");
+                    }
+                }),
+                Bytecode::Call(name, argc) => {
+                    // Try native function first
+                    if let Some(native) = self.native_functions.get(name) {
+                        let mut args = Vec::new();
+                        for _ in 0..*argc {
+                            args.push(self.stack.pop().unwrap_or(0.0));
+                        }
+                        args.reverse();
+                        let result = native(&args);
+                        self.stack.push(result);
+                        self.pc += 1;
+                    } else if let Some(&addr) = self.user_functions.get(name) {
+                        // Save return address on value stack
+                        self.stack.push((self.pc + 1) as f64);
+                        // Jump to function address
+                        self.pc = addr;
+                    } else {
+                        // Unknown function: skip call without panicking
+                        self.pc += 1;
+                    }
+                }
+                Bytecode::Return => {
+                    // Pop function result and return address, then restore PC and push result
+                    let result = self
+                        .stack
+                        .pop()
+                        .unwrap_or_else(|| panic!("Stack is empty on return"));
+                    let ret_addr = self
+                        .stack
+                        .pop()
+                        .unwrap_or_else(|| panic!("Return address missing on stack"))
+                        as usize;
+                    self.pc = ret_addr;
+                    self.stack.push(result);
+                }
+                Bytecode::Halt => {
+                    println!("Execution halted");
+                    break; // Stop execution
+                }
+                &Bytecode::Spawn => {
                     // Get the current bytecode value (should be 5 in our test case)
                     let value_to_spawn = if let Some(&val) = self.stack.last() {
                         val
@@ -132,7 +230,7 @@ impl VM {
                     self.threads.push(handle);
                     self.pc += 1;
                 }
-                Bytecode::Sync => {
+                &Bytecode::Sync => {
                     // Clear the main thread's stack before collecting results
                     self.stack.clear();
 
@@ -148,51 +246,12 @@ impl VM {
                     }
                     self.pc += 1;
                 }
-                Bytecode::Barrier => {
+                &Bytecode::Barrier => {
                     // Wait at a barrier for all threads
                     while let Some(thread) = self.threads.pop() {
                         thread.join().unwrap();
                     }
                     self.pc += 1; // Move to the next instruction
-                }
-                Bytecode::Jump(target) => {
-                    self.pc = target; // Jump to the target instruction
-                }
-                Bytecode::JumpIfZero(target) => {
-                    if let Some(&top) = self.stack.last() {
-                        if top == 0.0 {
-                            self.pc = target; // Jump to the target instruction
-                        } else {
-                            self.pc += 1; // Move to the next instruction
-                        }
-                    } else {
-                        panic!("Stack is empty");
-                    }
-                }
-                Bytecode::JumpIfNotZero(target) => {
-                    if let Some(&top) = self.stack.last() {
-                        if top != 0.0 {
-                            self.pc = target; // Jump to the target instruction
-                        } else {
-                            self.pc += 1; // Move to the next instruction
-                        }
-                    } else {
-                        panic!("Stack is empty");
-                    }
-                }
-                Bytecode::Pop => stackop!(self, {
-                    self.stack.pop();
-                }),
-                Bytecode::Dup => stackop!(self, {
-                    if let Some(&top) = self.stack.last() {
-                        self.stack.push(top);
-                    } else {
-                        panic!("Stack is empty");
-                    }
-                }),
-                Bytecode::Halt => {
-                    println!("Execution halted");
-                    break; // Stop execution
                 }
             }
         }
@@ -205,7 +264,9 @@ impl VM {
     }
 
     /// Compile an AST expression using the provided compiler and execute it, returning the top of stack.
-    pub fn run_expr<C: crate::compiler::Compiler<Instruction = Bytecode>>(expr: &parser::Expr) -> f64 {
+    pub fn run_expr<C: crate::compiler::Compiler<Instruction = Bytecode>>(
+        expr: &parser::Expr,
+    ) -> f64 {
         let bytecode = C::compile(expr);
         VM::run(bytecode)
     }
@@ -236,14 +297,21 @@ impl Bytecode {
                     _ => panic!("Unsupported binary op: {:?}", op),
                 }
             }
+            parser::Expr::Call { name, args } => {
+                for arg in args {
+                    Bytecode::compile_expr(arg, code);
+                }
+                code.push(Bytecode::Call(name.clone(), args.len()));
+            }
+            parser::Expr::Function { .. } => {
+                // Function definitions are handled at a higher level, not in main expr compiler
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_addition() {
         let bytecode = vec![
@@ -440,5 +508,40 @@ mod tests {
         vm.execute();
         // Should collect two values of 5
         assert_eq!(vm.stack, vec![5.0, 5.0]);
+    }
+
+    use crate::vm::{Bytecode, VM};
+
+    #[test]
+    fn test_native_print_function() {
+        let mut vm = VM::new(vec![
+            Bytecode::LoadConst(42.0),
+            Bytecode::Call("print".to_string(), 1),
+            Bytecode::Halt,
+        ]);
+        // Should not panic and should print 42
+        vm.execute();
+    }
+
+    #[test]
+    fn test_user_function_call() {
+        // Simulate a function at address 4: return x+1
+        let bytecode = vec![
+            Bytecode::LoadConst(5.0), // argument
+            Bytecode::StoreVar(0),    // store as local var 0
+            Bytecode::Call("inc".to_string(), 1),
+            Bytecode::Halt,
+            // Function 'inc' starts here (address 4):
+            Bytecode::LoadVar(0), // load argument
+            Bytecode::LoadConst(1.0),
+            Bytecode::Add,
+            Bytecode::Return,
+        ];
+        let mut vm = VM::new(bytecode);
+        // Register the function at the correct address
+        vm.user_functions.insert("inc".to_string(), 4);
+        vm.execute();
+        // The result should be left on the stack after return
+        assert_eq!(vm.stack.pop(), Some(6.0));
     }
 }

@@ -71,9 +71,13 @@ fn main() {
             print!("> ");
             io::stdout().flush().unwrap();
             let mut input = String::new();
-            if stdin.read_line(&mut input).is_err() { break; }
+            if stdin.read_line(&mut input).is_err() {
+                break;
+            }
             let input = input.trim();
-            if input == "exit" { break; }
+            if input == "exit" {
+                break;
+            }
             if !input.is_empty() {
                 run_code_with_preprocessing(input, None);
             }

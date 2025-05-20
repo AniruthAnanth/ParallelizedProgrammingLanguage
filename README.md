@@ -1,12 +1,17 @@
 # Parallelized Programming Language Scanner
 
-## EBNF Grammar for the Scanner
+## EBNF Grammar for the Scanner and Functions
 
 ```
 program      = { statement } ;
-statement    = assignment | expression | parallel | sync | barrier | control_flow ;
+statement    = assignment | expression | function_def | parallel | sync | barrier | control_flow ;
 assignment   = identifier '=' expression ';' ;
-expression   = term { ('+' | '-' | '*' | '/') term } ;
+function_def = 'fn' identifier '(' [ parameters ] ')' block ;
+parameters   = identifier { ',' identifier } ;
+block        = '{' { statement } '}' ;
+expression   = call | term { ('+' | '-' | '*' | '/') term } ;
+call        = identifier '(' [ arguments ] ')' ;
+arguments   = expression { ',' expression } ;
 term         = number | identifier | '(' expression ')' | '-' term ;
 parallel     = 'spawn' statement ;
 sync         = 'sync' ';' ;
